@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # coding: utf-8
 import os
+import re
 import sys
 import json
 import shutil
@@ -194,7 +195,8 @@ class Display:
                        "    `" + SAFARI_BASE_URL + "/library/view/book-name/XXXXXXXXXXXXX/`"
 
         else:
-            os.remove(COOKIES_FILE)
+            if not self.auth_cookie:
+                os.remove(COOKIES_FILE)
             message += "Out-of-Session%s.\n" % (" (%s)" % response["detail"]) if "detail" in response else "" +\
                        Display.SH_YELLOW + "[+]" + Display.SH_DEFAULT + \
                        " Use the `--cred` or `--login` options in order to perform the auth login to Safari."
@@ -239,8 +241,9 @@ class SafariBooks:
                    "<head>\n" \
                    "{0}\n" \
                    "<style type=\"text/css\">" \
-                   "body{{margin:1em;}}" \
-                   "#sbo-rt-content *{{text-indent:0pt!important;}}#sbo-rt-content .bq{{margin-right:1em!important;}}"
+                #    "body{{margin:1em;}}" \
+                #    "#sbo-rt-content *{{text-indent:0!important;}}" \
+                #    "#sbo-rt-content .bq{{margin-right:1em!important;}}"
 
     KINDLE_HTML = "body{{background-color:transparent!important;}}" \
                   "#sbo-rt-content *{{word-wrap:break-word!important;" \
@@ -273,7 +276,7 @@ class SafariBooks:
                   "<dc:language>en-US</dc:language>\n" \
                   "<dc:date>{7}</dc:date>\n" \
                   "<dc:identifier id=\"bookid\">{0}</dc:identifier>\n" \
-                  "<meta name=\"cover\" content=\"{8}\"/>\n" \
+                  "<meta name=\"cover\" content=\"cover-image\"/>\n" \
                   "</metadata>\n" \
                   "<manifest>\n" \
                   "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\" />\n" \
@@ -307,18 +310,27 @@ class SafariBooks:
         self.cookies = {}
         self.jwt = {}
 
-        if not args.cred:
-            if not os.path.isfile(COOKIES_FILE):
-                self.display.exit("Login: unable to find cookies file.\n"
-                                  "    Please use the `--cred` or `--login` options to perform the login.")
+        env_cookie = os.getenv("SAFARIBOOKS_COOKIE")
 
-            self.cookies = json.load(open(COOKIES_FILE))
+        if args.cookie:
+            self.auth_cookie = args.cookie
+
+        elif env_cookie is not None:
+            self.auth_cookie = env_cookie
 
         else:
-            self.display.info("Logging into Safari Books Online...", state=True)
-            self.do_login(*args.cred)
-            if not args.no_cookies:
-                json.dump(self.cookies, open(COOKIES_FILE, "w"))
+            if not args.cred:
+                if not os.path.isfile(COOKIES_FILE):
+                    self.display.exit("Login: unable to find cookies file.\n"
+                                    "    Please use the `--cred` or `--login` options to perform the login.")
+
+                self.cookies = json.load(open(COOKIES_FILE))
+
+            else:
+                self.display.info("Logging into Safari Books Online...", state=True)
+                self.do_login(*args.cred)
+                if not args.no_cookies:
+                    json.dump(self.cookies, open(COOKIES_FILE, "w"))
 
         self.book_id = args.bookid
         self.api_url = self.API_TEMPLATE.format(self.book_id)
@@ -341,11 +353,11 @@ class SafariBooks:
         self.clean_book_title = "".join(self.escape_dirname(self.book_title).split(",")[:2]) \
                                 + " ({0})".format(self.book_id)
 
-        books_dir = os.path.join(PATH, "Books")
-        if not os.path.isdir(books_dir):
-            os.mkdir(books_dir)
+        self.BOOKS_DIR = os.path.join(PATH, "Books")
+        if not os.path.isdir(self.BOOKS_DIR):
+            os.mkdir(self.BOOKS_DIR)
 
-        self.BOOK_PATH = os.path.join(books_dir, self.clean_book_title)
+        self.BOOK_PATH = os.path.join(self.BOOKS_DIR, self.clean_book_title)
         self.display.set_output_dir(self.BOOK_PATH)
         self.css_path = ""
         self.images_path = ""
@@ -362,18 +374,25 @@ class SafariBooks:
         self.cover = False
         self.get()
         if not self.cover:
-            self.cover = self.get_default_cover()
-            cover_html = self.parse_html(
-                html.fromstring("<div id=\"sbo-rt-content\"><img src=\"Images/{0}\"></div>".format(self.cover)), True
-            )
+            self.cover = self.create_cover()
 
-            self.book_chapters = [{
-                "filename": "default_cover.xhtml",
-                "title": "Cover"
-            }] + self.book_chapters
+            if not self.book_chapters[0]["filename"].startswith("cover."):
+                self.display.info("No cover found, adding default cover...", state=True)
 
-            self.filename = self.book_chapters[0]["filename"]
-            self.save_page_html(cover_html)
+                cover_html = self.parse_html(
+                    html.fromstring("<div id=\"sbo-rt-content\"><img src=\"Images/{0}\"></div>".format(self.cover)), True
+                )
+
+                self.book_chapters = [{
+                    "filename": "default_cover.xhtml",
+                    "title": "Cover"
+                }] + self.book_chapters
+
+                self.filename = self.book_chapters[0]["filename"]
+                self.save_page_html(cover_html)
+
+            else:
+                self.display.info("Cover already existing, skipping default cover addition...", state=True)
 
         self.css_done_queue = Queue(0) if "win" not in sys.platform else WinQueue()
         self.display.info("Downloading book CSSs... (%s files)" % len(self.css), state=True)
@@ -385,10 +404,10 @@ class SafariBooks:
         self.display.info("Creating EPUB file...", state=True)
         self.create_epub()
 
-        if not args.no_cookies:
-            json.dump(self.cookies, open(COOKIES_FILE, "w"))
+        if not self.auth_cookie and not args.no_cookies:
+             json.dump(self.cookies, open(COOKIES_FILE, "w"))
 
-        self.display.done(os.path.join(self.BOOK_PATH, self.book_id + ".epub"))
+        self.display.done(os.path.join(self.BOOKS_DIR, self.epub_filename + ".epub"))
         self.display.unregister()
 
         if not self.display.in_error and not args.log:
@@ -399,7 +418,10 @@ class SafariBooks:
 
     def return_headers(self, url):
         if ORLY_BASE_HOST in urlsplit(url).netloc:
-            self.HEADERS["cookie"] = self.return_cookies()
+            if self.auth_cookie:
+                self.HEADERS["cookie"] = self.auth_cookie
+            else:
+                self.HEADERS["cookie"] = self.return_cookies()
 
         else:
             self.HEADERS["cookie"] = ""
@@ -435,7 +457,7 @@ class SafariBooks:
             self.display.error(str(request_exception))
             return 0
 
-        if update_cookies:
+        if update_cookies and not self.auth_cookie:
             self.update_cookies(response.cookies)
 
         if update_referer:
@@ -546,6 +568,28 @@ class SafariBooks:
 
         result += response["results"]
         return result + (self.get_book_chapters(page + 1) if response["next"] else [])
+
+    def create_cover(self):
+        response = self.requests_provider(self.api_url)
+        parsed = response.json()
+        for i in parsed['chapters']:
+            # very vulnerable as publishers may differ
+            if 'cover.' or 'Cover.' or 'titlepage.' in i:
+                cover_url = i
+                break
+
+        if cover_url:
+            cover_response = self.requests_provider(cover_url)
+            cover_parsed = cover_response.json()
+            imgAttrib = cover_parsed['images']
+            if imgAttrib:
+                lst2str = "".join(list(map(str, imgAttrib)))
+                return "Images/" + lst2str.split('/')[-1]
+            else:
+                # if no covers found, fall back to fuzzy thumbnails
+                return "Images/" + self.get_default_cover()
+        else:
+            return "Images/" + self.get_default_cover()
 
     def get_default_cover(self):
         response = self.requests_provider(self.book_info["cover"], update_cookies=False, stream=True)
@@ -696,10 +740,11 @@ class SafariBooks:
                 is_cover = self.get_cover(book_content)
                 if is_cover is not None:
                     page_css = "<style>" \
-                               "body{display:table;position:absolute;margin:0!important;height:100%;width:100%;}" \
-                               "#Cover{display:table-cell;vertical-align:middle;text-align:center;}" \
-                               "img{height:90vh;margin-left:auto;margin-right:auto;}" \
+                               "img{max-width:100%;}" \
                                "</style>"
+                            #   "body{display:table;position:absolute;margin:0!important;height:100%;width:100%;}" \
+                            #   "#Cover{display:table-cell;vertical-align:middle;text-align:center;}" \
+                            #   "img{height:90vh;margin-left:auto;margin-right:auto;}" \
                     cover_html = html.fromstring("<div id=\"Cover\"></div>")
                     cover_div = cover_html.xpath("//div")[0]
                     cover_img = cover_div.makeelement("img")
@@ -917,6 +962,9 @@ class SafariBooks:
             manifest.append("<item id=\"style_{0:0>2}\" href=\"Styles/Style{0:0>2}.css\" "
                             "media-type=\"text/css\" />".format(i))
 
+        res = self.create_cover()
+        manifest.append("<item id=\"cover-image\" href=\"{0}\" media-type=\"image/png\" properties=\"cover-image\" />".format(res))
+
         authors = "\n".join("<dc:creator opf:file-as=\"{0}\" opf:role=\"aut\">{0}</dc:creator>".format(
             escape(aut["name"])
         ) for aut in self.book_info["authors"])
@@ -987,6 +1035,10 @@ class SafariBooks:
             navmap
         )
 
+    def get_valid_filename(self, s):
+        s = str(s).strip().replace(':', ' -')
+        return re.sub(r'(?u)[^-\w.,! ]', '', s)
+
     def create_epub(self):
         open(os.path.join(self.BOOK_PATH, "mimetype"), "w").write("application/epub+zip")
         meta_info = os.path.join(self.BOOK_PATH, "META-INF")
@@ -1011,7 +1063,11 @@ class SafariBooks:
             os.remove(zip_file + ".zip")
 
         shutil.make_archive(zip_file, 'zip', self.BOOK_PATH)
-        os.rename(zip_file + ".zip", os.path.join(self.BOOK_PATH, self.book_id) + ".epub")
+
+        self.epub_filename = self.book_info["authors"][0]["name"] + " - " + self.book_info["title"]
+        self.epub_filename = self.get_valid_filename(self.epub_filename)
+
+        os.rename(zip_file + ".zip", os.path.join(self.BOOKS_DIR, self.epub_filename) + ".epub")
 
 
 # MAIN
@@ -1031,6 +1087,11 @@ if __name__ == "__main__":
     login_arg_group.add_argument(
         "--login", action='store_true',
         help="Prompt for credentials used to perform the auth login on Safari Books Online."
+    )
+    login_arg_group.add_argument(
+        "--cookie", metavar="<COOKIE>", default=None,
+        help="Manually pass on cookie string for auth."
+             "Also checks for environment var `SAFARIBOOKS_COOKIE` if not provided."
     )
 
     arguments.add_argument(

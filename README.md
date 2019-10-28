@@ -1,3 +1,12 @@
+### Fork quick summary
+
+- Add support for manual cookie setting (for SSO/enterprise access)
+- Better epub file naming (`<author> - <title>`)
+- Fix double cover, better cover support and quality
+- Removes extra CSS margins (fixes some content wrapping)
+
+---
+
 # SafariBooks
 Download and generate *EPUB* of your favorite books from [*Safari Books Online*](https://www.safaribooksonline.com) library.  
 I'm not responsible for the use of this program, this is only for *personal* and *educational* purpose.  
@@ -62,6 +71,9 @@ optional arguments:
                        Es. ` --cred "account_mail@mail.com:password01" `.
   --login              Prompt for credentials used to perform the auth login
                        on Safari Books Online.
+  --cookie             Manually pass on cookie string for auth.
+                       Also checks for environment var `SAFARIBOOKS_COOKIE`
+                       if not provided.
   --no-cookies         Prevent your session data to be saved into
                        `cookies.json` file.
   --no-kindle          Remove some CSS rules that block overflow on `table`
